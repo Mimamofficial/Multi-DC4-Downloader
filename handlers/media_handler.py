@@ -1,5 +1,5 @@
 """handlers/media_handler.py – Video, Audio, Document processing."""
-import os, time, asyncio
+import os, time, uuid
 from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telegram.ext import ContextTypes, MessageHandler, CallbackQueryHandler, filters
@@ -11,75 +11,87 @@ from config import Config
 
 os.makedirs(Config.DOWNLOAD_DIR, exist_ok=True)
 
+# Global file_id store (short_key -> file_id)
+_file_store: dict[str, str] = {}
+
+def _store_file(file_id: str) -> str:
+    """Store file_id and return a short 8-char key."""
+    key = uuid.uuid4().hex[:8]
+    _file_store[key] = file_id
+    return key
+
+def _get_file(key: str) -> str:
+    return _file_store.get(key, "")
+
 
 # ─────────────── keyboard builders ────────────────────────────────────
 
-def _video_kb(file_id: str) -> InlineKeyboardMarkup:
+def _video_kb(key: str) -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton("1️⃣ Audio & Subtitles Remover",    callback_data=f"v_rem_all|{file_id}")],
-        [InlineKeyboardButton("2️⃣ Audio & Subtitles Extractor",  callback_data=f"v_ext_all|{file_id}")],
-        [InlineKeyboardButton("3️⃣ Caption & Buttons Editor",     callback_data=f"v_caption|{file_id}")],
-        [InlineKeyboardButton("4️⃣ Video Trimmer",                callback_data=f"v_trim|{file_id}")],
-        [InlineKeyboardButton("5️⃣ Video Merger",                 callback_data=f"v_merge|{file_id}")],
-        [InlineKeyboardButton("6️⃣ Mute Audio in Video",         callback_data=f"v_mute|{file_id}")],
-        [InlineKeyboardButton("7️⃣ Video + Audio Merger",        callback_data=f"v_va_merge|{file_id}")],
-        [InlineKeyboardButton("8️⃣ Video + Subtitle Merger",     callback_data=f"v_vs_merge|{file_id}")],
-        [InlineKeyboardButton("9️⃣ Video to GIF",                callback_data=f"v_gif|{file_id}")],
-        [InlineKeyboardButton("🔟 Video Splitter",               callback_data=f"v_split|{file_id}")],
-        [InlineKeyboardButton("1️⃣1️⃣ Screenshot",               callback_data=f"v_ss|{file_id}")],
-        [InlineKeyboardButton("1️⃣2️⃣ Manual Screenshot",        callback_data=f"v_ss_manual|{file_id}")],
-        [InlineKeyboardButton("1️⃣3️⃣ Sample Generator",         callback_data=f"v_sample|{file_id}")],
-        [InlineKeyboardButton("1️⃣4️⃣ Audio Converter",          callback_data=f"v_audio_conv|{file_id}")],
-        [InlineKeyboardButton("1️⃣5️⃣ Video Optimizer",          callback_data=f"v_optimize|{file_id}")],
-        [InlineKeyboardButton("1️⃣6️⃣ Video Converter",          callback_data=f"v_vid_conv|{file_id}")],
-        [InlineKeyboardButton("1️⃣7️⃣ Video Renamer",            callback_data=f"v_rename|{file_id}")],
-        [InlineKeyboardButton("1️⃣8️⃣ Media Information",        callback_data=f"v_info|{file_id}")],
-        [InlineKeyboardButton("1️⃣9️⃣ Make Archive",             callback_data=f"v_archive|{file_id}")],
+        [InlineKeyboardButton("1️⃣ Audio & Subtitles Remover",   callback_data=f"v_rem_all#{key}")],
+        [InlineKeyboardButton("2️⃣ Audio & Subtitles Extractor", callback_data=f"v_ext_all#{key}")],
+        [InlineKeyboardButton("3️⃣ Caption & Buttons Editor",    callback_data=f"v_caption#{key}")],
+        [InlineKeyboardButton("4️⃣ Video Trimmer",               callback_data=f"v_trim#{key}")],
+        [InlineKeyboardButton("5️⃣ Video Merger",                callback_data=f"v_merge#{key}")],
+        [InlineKeyboardButton("6️⃣ Mute Audio in Video",        callback_data=f"v_mute#{key}")],
+        [InlineKeyboardButton("7️⃣ Video + Audio Merger",       callback_data=f"v_va_merge#{key}")],
+        [InlineKeyboardButton("8️⃣ Video + Subtitle Merger",    callback_data=f"v_vs_merge#{key}")],
+        [InlineKeyboardButton("9️⃣ Video to GIF",               callback_data=f"v_gif#{key}")],
+        [InlineKeyboardButton("🔟 Video Splitter",              callback_data=f"v_split#{key}")],
+        [InlineKeyboardButton("1️⃣1️⃣ Screenshot",              callback_data=f"v_ss#{key}")],
+        [InlineKeyboardButton("1️⃣2️⃣ Manual Screenshot",       callback_data=f"v_ss_manual#{key}")],
+        [InlineKeyboardButton("1️⃣3️⃣ Sample Generator",        callback_data=f"v_sample#{key}")],
+        [InlineKeyboardButton("1️⃣4️⃣ Audio Converter",         callback_data=f"v_audio_conv#{key}")],
+        [InlineKeyboardButton("1️⃣5️⃣ Video Optimizer",         callback_data=f"v_optimize#{key}")],
+        [InlineKeyboardButton("1️⃣6️⃣ Video Converter",         callback_data=f"v_vid_conv#{key}")],
+        [InlineKeyboardButton("1️⃣7️⃣ Video Renamer",           callback_data=f"v_rename#{key}")],
+        [InlineKeyboardButton("1️⃣8️⃣ Media Information",       callback_data=f"v_info#{key}")],
+        [InlineKeyboardButton("1️⃣9️⃣ Make Archive",            callback_data=f"v_archive#{key}")],
+        [InlineKeyboardButton("❌ Close",                        callback_data="media_close")],
+    ]
+    return InlineKeyboardMarkup(rows)
+
+
+def _audio_kb(key: str) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton("1️⃣ Caption & Buttons Editor",    callback_data=f"a_caption#{key}")],
+        [InlineKeyboardButton("2️⃣ Slowed & Reverb",             callback_data=f"a_slowreverb#{key}")],
+        [InlineKeyboardButton("3️⃣ Audio Converter",             callback_data=f"a_convert#{key}")],
+        [InlineKeyboardButton("4️⃣ Make Archive",                callback_data=f"a_archive#{key}")],
+        [InlineKeyboardButton("5️⃣ Audio Merger",                callback_data=f"a_merge#{key}")],
+        [InlineKeyboardButton("6️⃣ 8D Audio Converter",          callback_data=f"a_8d#{key}")],
+        [InlineKeyboardButton("7️⃣ Music Equalizer",             callback_data=f"a_eq#{key}")],
+        [InlineKeyboardButton("8️⃣ Bass Booster",                callback_data=f"a_bass#{key}")],
+        [InlineKeyboardButton("9️⃣ Treble Booster",              callback_data=f"a_treble#{key}")],
+        [InlineKeyboardButton("🔟 Audio Trimmer",                callback_data=f"a_trim#{key}")],
+        [InlineKeyboardButton("1️⃣1️⃣ Auto Audio Trimmer",       callback_data=f"a_autotrim#{key}")],
+        [InlineKeyboardButton("1️⃣2️⃣ Rename Audio",             callback_data=f"a_rename#{key}")],
+        [InlineKeyboardButton("1️⃣3️⃣ Audio Tag Editor",         callback_data=f"a_tag#{key}")],
+        [InlineKeyboardButton("1️⃣4️⃣ Speed Changer",            callback_data=f"a_speed#{key}")],
+        [InlineKeyboardButton("1️⃣5️⃣ Volume Changer",           callback_data=f"a_vol#{key}")],
+        [InlineKeyboardButton("1️⃣6️⃣ Media Information",        callback_data=f"a_info#{key}")],
+        [InlineKeyboardButton("1️⃣7️⃣ Compress Audio",           callback_data=f"a_compress#{key}")],
         [InlineKeyboardButton("❌ Close",                         callback_data="media_close")],
     ]
     return InlineKeyboardMarkup(rows)
 
 
-def _audio_kb(file_id: str) -> InlineKeyboardMarkup:
+def _doc_kb(key: str) -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton("1️⃣ Caption & Buttons Editor",     callback_data=f"a_caption|{file_id}")],
-        [InlineKeyboardButton("2️⃣ Slowed & Reverb",              callback_data=f"a_slowreverb|{file_id}")],
-        [InlineKeyboardButton("3️⃣ Audio Converter",              callback_data=f"a_convert|{file_id}")],
-        [InlineKeyboardButton("4️⃣ Make Archive",                 callback_data=f"a_archive|{file_id}")],
-        [InlineKeyboardButton("5️⃣ Audio Merger",                 callback_data=f"a_merge|{file_id}")],
-        [InlineKeyboardButton("6️⃣ 8D Audio Converter",           callback_data=f"a_8d|{file_id}")],
-        [InlineKeyboardButton("7️⃣ Music Equalizer",              callback_data=f"a_eq|{file_id}")],
-        [InlineKeyboardButton("8️⃣ Bass Booster",                 callback_data=f"a_bass|{file_id}")],
-        [InlineKeyboardButton("9️⃣ Treble Booster",               callback_data=f"a_treble|{file_id}")],
-        [InlineKeyboardButton("🔟 Audio Trimmer",                 callback_data=f"a_trim|{file_id}")],
-        [InlineKeyboardButton("1️⃣1️⃣ Auto Audio Trimmer",        callback_data=f"a_autotrim|{file_id}")],
-        [InlineKeyboardButton("1️⃣2️⃣ Rename Audio",              callback_data=f"a_rename|{file_id}")],
-        [InlineKeyboardButton("1️⃣3️⃣ Audio Tag Editor",          callback_data=f"a_tag|{file_id}")],
-        [InlineKeyboardButton("1️⃣4️⃣ Speed Changer",             callback_data=f"a_speed|{file_id}")],
-        [InlineKeyboardButton("1️⃣5️⃣ Volume Changer",            callback_data=f"a_vol|{file_id}")],
-        [InlineKeyboardButton("1️⃣6️⃣ Media Information",         callback_data=f"a_info|{file_id}")],
-        [InlineKeyboardButton("1️⃣7️⃣ Compress Audio",            callback_data=f"a_compress|{file_id}")],
-        [InlineKeyboardButton("❌ Close",                          callback_data="media_close")],
+        [InlineKeyboardButton("1️⃣ File Renamer",                callback_data=f"d_rename#{key}")],
+        [InlineKeyboardButton("2️⃣ Create Archive (zip)",        callback_data=f"d_archive#{key}")],
+        [InlineKeyboardButton("3️⃣ Archive Extractor",           callback_data=f"d_extract#{key}")],
+        [InlineKeyboardButton("4️⃣ Caption & Buttons Editor",    callback_data=f"d_caption#{key}")],
+        [InlineKeyboardButton("5️⃣ Forwarded Tag Remover",       callback_data=f"d_fwd_remove#{key}")],
+        [InlineKeyboardButton("6️⃣ Subtitle Converter",          callback_data=f"d_sub_conv#{key}")],
+        [InlineKeyboardButton("7️⃣ JSON Formatter",              callback_data=f"d_json#{key}")],
+        [InlineKeyboardButton("❌ Close",                         callback_data="media_close")],
     ]
     return InlineKeyboardMarkup(rows)
 
 
-def _doc_kb(file_id: str) -> InlineKeyboardMarkup:
-    rows = [
-        [InlineKeyboardButton("1️⃣ File Renamer",                 callback_data=f"d_rename|{file_id}")],
-        [InlineKeyboardButton("2️⃣ Create Archive (zip)",         callback_data=f"d_archive|{file_id}")],
-        [InlineKeyboardButton("3️⃣ Archive Extractor",            callback_data=f"d_extract|{file_id}")],
-        [InlineKeyboardButton("4️⃣ Caption & Buttons Editor",     callback_data=f"d_caption|{file_id}")],
-        [InlineKeyboardButton("5️⃣ Forwarded Tag Remover",        callback_data=f"d_fwd_remove|{file_id}")],
-        [InlineKeyboardButton("6️⃣ Subtitle Converter",           callback_data=f"d_sub_conv|{file_id}")],
-        [InlineKeyboardButton("7️⃣ JSON Formatter",               callback_data=f"d_json|{file_id}")],
-        [InlineKeyboardButton("❌ Close",                          callback_data="media_close")],
-    ]
-    return InlineKeyboardMarkup(rows)
-
-
-def _format_kb(data_prefix: str, formats: list[str]) -> InlineKeyboardMarkup:
-    rows = [[InlineKeyboardButton(f, callback_data=f"{data_prefix}|{f}")] for f in formats]
+def _format_kb(prefix: str, formats: list[str]) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(f, callback_data=f"{prefix}#{f}")] for f in formats]
     rows.append([InlineKeyboardButton("🔙 Back", callback_data="media_close")])
     return InlineKeyboardMarkup(rows)
 
@@ -88,9 +100,9 @@ def _format_kb(data_prefix: str, formats: list[str]) -> InlineKeyboardMarkup:
 
 async def _download(context, file_id: str, uid: int, ext: str = "") -> str:
     tg_file = await context.bot.get_file(file_id)
-    dest    = os.path.join(Config.DOWNLOAD_DIR, str(uid))
+    dest = os.path.join(Config.DOWNLOAD_DIR, str(uid))
     os.makedirs(dest, exist_ok=True)
-    filename = f"{file_id[-10:]}{ext or ''}"
+    filename = f"{int(time.time())}{ext}"
     path = os.path.join(dest, filename)
     await tg_file.download_to_drive(path)
     return path
@@ -99,7 +111,6 @@ async def _download(context, file_id: str, uid: int, ext: str = "") -> str:
 async def _send_file(context, chat_id: int, path: str, caption: str = "",
                      thumb_id: str = None, upload_type: str = "document",
                      spoiler: bool = False):
-    """Upload a file back to Telegram."""
     thumb_path = None
     if thumb_id:
         try:
@@ -110,7 +121,6 @@ async def _send_file(context, chat_id: int, path: str, caption: str = "",
             thumb_path = None
 
     ext = Path(path).suffix.lower().lstrip(".")
-    size = os.path.getsize(path)
     send_kw = {"caption": caption, "parse_mode": "HTML"}
     if thumb_path:
         send_kw["thumbnail"] = open(thumb_path, "rb")
@@ -127,8 +137,13 @@ async def _send_file(context, chat_id: int, path: str, caption: str = "",
         os.remove(thumb_path)
 
 
-async def _progress_msg(msg: Message, text: str) -> Message:
-    return await msg.reply_text(f"⏳ {text}...")
+def _cleanup(paths: list):
+    for p in paths:
+        try:
+            if p and os.path.exists(p):
+                os.remove(p)
+        except Exception:
+            pass
 
 
 # ─────────────── message handler ──────────────────────────────────────
@@ -140,45 +155,45 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user.get("banned"):
         return
 
-    # Save thumbnail if user sends a photo
     if msg.photo:
         file_id = msg.photo[-1].file_id
         save_thumb(uid, file_id)
         await msg.reply_text("✅ Thumbnail saved! Use /show_thumb to view, /del_thumb to delete.")
         return
 
-    # Waiting for text input?
     waiting = context.user_data.get("waiting_for")
-    if waiting:
-        await _handle_text_input(update, context, waiting, msg.text or "")
+    if waiting and msg.text and not msg.text.startswith("http"):
+        await _handle_text_input(update, context, waiting, msg.text)
         return
 
-    # Determine file type
-    if msg.video or msg.document and _is_video(msg.document.file_name or ""):
-        file = msg.video or msg.document
+    if msg.video or (msg.document and _is_video(msg.document.file_name or "")):
+        file    = msg.video or msg.document
         file_id = file.file_id
         fname   = getattr(file, "file_name", None) or f"video_{int(time.time())}.mp4"
+        key     = _store_file(file_id)
         await msg.reply_text(
             f"🎬 <b>{fname}</b>\n\nChoose an option:",
             parse_mode="HTML",
-            reply_markup=_video_kb(file_id)
+            reply_markup=_video_kb(key)
         )
     elif msg.audio or (msg.document and _is_audio(msg.document.file_name or "")):
         file    = msg.audio or msg.document
         file_id = file.file_id
         fname   = getattr(file, "file_name", None) or f"audio_{int(time.time())}.mp3"
+        key     = _store_file(file_id)
         await msg.reply_text(
             f"🎵 <b>{fname}</b>\n\nChoose an option:",
             parse_mode="HTML",
-            reply_markup=_audio_kb(file_id)
+            reply_markup=_audio_kb(key)
         )
     elif msg.document:
         file_id = msg.document.file_id
         fname   = msg.document.file_name or "document"
+        key     = _store_file(file_id)
         await msg.reply_text(
             f"📄 <b>{fname}</b>\n\nChoose an option:",
             parse_mode="HTML",
-            reply_markup=_doc_kb(file_id)
+            reply_markup=_doc_kb(key)
         )
     elif msg.text and msg.text.startswith("http"):
         from handlers.url_handler import handle_url
@@ -207,7 +222,6 @@ async def _handle_text_input(update, context, waiting: str, text: str):
         update_usettings(uid, "caption_text", text)
         await update.message.reply_text("✅ Caption saved!")
     elif waiting == "trim_times":
-        # text should be "HH:MM:SS HH:MM:SS"
         parts = text.strip().split()
         if len(parts) == 2:
             task = get_task(uid)
@@ -215,10 +229,14 @@ async def _handle_text_input(update, context, waiting: str, text: str):
                 context.user_data["trim_start"] = parts[0]
                 context.user_data["trim_end"]   = parts[1]
                 await _do_trim(update, context, task["file_id"], task["media_type"])
+        else:
+            await update.message.reply_text("❌ Format galat hai. Example: <code>00:01:00 00:02:30</code>", parse_mode="HTML")
+        return
     elif waiting == "new_filename":
         task = get_task(uid)
         if task:
             await _do_rename(update, context, task["file_id"], task["media_type"], text)
+        return
     elif waiting == "speed_val":
         try:
             speed = float(text)
@@ -226,7 +244,8 @@ async def _handle_text_input(update, context, waiting: str, text: str):
             if task:
                 await _do_speed(update, context, task["file_id"], speed)
         except ValueError:
-            await update.message.reply_text("❌ Invalid value. Send a number like 1.5")
+            await update.message.reply_text("❌ Invalid. Example: <code>1.5</code>", parse_mode="HTML")
+        return
     elif waiting == "volume_val":
         try:
             vol  = int(text)
@@ -234,7 +253,8 @@ async def _handle_text_input(update, context, waiting: str, text: str):
             if task:
                 await _do_volume(update, context, task["file_id"], vol)
         except ValueError:
-            await update.message.reply_text("❌ Invalid value. Send a number like 150")
+            await update.message.reply_text("❌ Invalid. Example: <code>150</code>", parse_mode="HTML")
+        return
     context.user_data.pop("waiting_for", None)
 
 
@@ -252,12 +272,12 @@ async def _do_trim(update, context, file_id, media_type):
     ok    = ff.trim_video(src, out, start, end) if media_type == "video" else ff.trim_audio(src, out, start, end)
     if ok:
         s = get_settings(uid)
-        await _send_file(context, chat, out, upload_type=s.get("upload_type", "document"),
-                         thumb_id=get_thumb(uid))
+        await _send_file(context, chat, out, upload_type=s.get("upload_type", "document"), thumb_id=get_thumb(uid))
     else:
         await context.bot.send_message(chat, "❌ Trim failed.")
     await pm.delete()
     _cleanup([src, out])
+    context.user_data.pop("waiting_for", None)
 
 
 async def _do_rename(update, context, file_id, media_type, new_name):
@@ -271,6 +291,7 @@ async def _do_rename(update, context, file_id, media_type, new_name):
     await _send_file(context, chat, out, upload_type="document")
     await pm.delete()
     _cleanup([out])
+    context.user_data.pop("waiting_for", None)
 
 
 async def _do_speed(update, context, file_id, speed):
@@ -286,6 +307,7 @@ async def _do_speed(update, context, file_id, speed):
         await context.bot.send_message(chat, "❌ Speed change failed.")
     await pm.delete()
     _cleanup([src, out])
+    context.user_data.pop("waiting_for", None)
 
 
 async def _do_volume(update, context, file_id, vol):
@@ -301,15 +323,7 @@ async def _do_volume(update, context, file_id, vol):
         await context.bot.send_message(chat, "❌ Volume change failed.")
     await pm.delete()
     _cleanup([src, out])
-
-
-def _cleanup(paths: list):
-    for p in paths:
-        try:
-            if p and os.path.exists(p):
-                os.remove(p)
-        except Exception:
-            pass
+    context.user_data.pop("waiting_for", None)
 
 
 # ─────────────── callback handler ─────────────────────────────────────
@@ -324,17 +338,19 @@ async def media_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.message.delete()
         return
 
-    parts   = q.data.split("|")
-    action  = parts[0]
-    file_id = parts[1] if len(parts) > 1 else ""
-    extra   = parts[2] if len(parts) > 2 else ""
+    # Parse action#key or action#key#extra
+    parts  = q.data.split("#")
+    action = parts[0]
+    key    = parts[1] if len(parts) > 1 else ""
+    extra  = parts[2] if len(parts) > 2 else ""
 
+    file_id = _get_file(key)
     s       = get_settings(uid)
     thumb   = get_thumb(uid)
     upload  = s.get("upload_type", "document")
     spoiler = get_usettings(uid).get("spoiler_video", False)
 
-    # ── VIDEO actions ──────────────────────────────────────────────────
+    # ── VIDEO ──────────────────────────────────────────────────────────
 
     if action == "v_rem_all":
         pm  = await q.message.reply_text("🔧 Removing audio & subtitles...")
@@ -368,7 +384,7 @@ async def media_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         src = await _download(context, file_id, uid, ".mp4")
         out = src + ".gif"
         ok  = ff.video_to_gif(src, out)
-        if ok: await context.bot.send_animation(chat, open(out,"rb"))
+        if ok: await context.bot.send_animation(chat, open(out, "rb"))
         else:  await q.message.reply_text("❌ Failed.")
         await pm.delete(); _cleanup([src, out])
 
@@ -377,14 +393,14 @@ async def media_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         src = await _download(context, file_id, uid, ".mp4")
         out = src + "_ss.jpg"
         ok  = ff.take_screenshot(src, out)
-        if ok: await context.bot.send_photo(chat, open(out,"rb"))
+        if ok: await context.bot.send_photo(chat, open(out, "rb"))
         else:  await q.message.reply_text("❌ Failed.")
         await pm.delete(); _cleanup([src, out])
 
     elif action == "v_ss_manual":
         set_task(uid, {"file_id": file_id, "media_type": "video", "action": "ss_manual"})
         context.user_data["waiting_for"] = "trim_times"
-        await q.message.reply_text("⏱ Send the timestamp for screenshot (e.g. 00:01:30):")
+        await q.message.reply_text("⏱ Send timestamp (e.g. <code>00:01:30</code>):", parse_mode="HTML")
 
     elif action == "v_sample":
         pm  = await q.message.reply_text("🎬 Generating 30s sample...")
@@ -396,7 +412,7 @@ async def media_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await pm.delete(); _cleanup([src, out])
 
     elif action == "v_optimize":
-        pm  = await q.message.reply_text("⚡ Optimizing video (CRF 28)...")
+        pm  = await q.message.reply_text("⚡ Optimizing video...")
         src = await _download(context, file_id, uid, ".mp4")
         out = src + "_opt.mp4"
         ok  = ff.optimize_video(src, out)
@@ -412,7 +428,7 @@ async def media_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == "v_rename":
         set_task(uid, {"file_id": file_id, "media_type": "video"})
         context.user_data["waiting_for"] = "new_filename"
-        await q.message.reply_text("✏️ Send the new filename (with extension, e.g. myvideo.mp4):")
+        await q.message.reply_text("✏️ Send new filename (e.g. <code>myvideo.mp4</code>):", parse_mode="HTML")
 
     elif action == "v_info":
         pm  = await q.message.reply_text("🔍 Getting media info...")
@@ -422,25 +438,23 @@ async def media_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await pm.delete(); _cleanup([src])
 
     elif action == "v_audio_conv":
-        kb = _format_kb("v_audio_conv_fmt|" + file_id, Config.AUDIO_FORMATS)
-        await q.edit_message_reply_markup(kb)
+        await q.edit_message_reply_markup(_format_kb(f"v_afmt#{key}", Config.AUDIO_FORMATS))
 
-    elif action.startswith("v_audio_conv_fmt"):
-        fmt = extra or parts[-1]
+    elif action == "v_afmt":
+        fmt = extra
         pm  = await q.message.reply_text(f"🎵 Extracting audio as {fmt}...")
         src = await _download(context, file_id, uid, ".mp4")
         out = src + f"_audio.{fmt}"
         ok  = ff.extract_audio(src, out, fmt)
         if ok: await _send_file(context, chat, out, upload_type="audio")
         else:  await q.message.reply_text("❌ Failed.")
-        await q.message.delete(); await pm.delete(); _cleanup([src, out])
+        await pm.delete(); _cleanup([src, out])
 
     elif action == "v_vid_conv":
-        kb = _format_kb("v_vid_conv_fmt|" + file_id, Config.VIDEO_FORMATS)
-        await q.edit_message_reply_markup(kb)
+        await q.edit_message_reply_markup(_format_kb(f"v_vfmt#{key}", Config.VIDEO_FORMATS))
 
-    elif action.startswith("v_vid_conv_fmt"):
-        fmt = extra or parts[-1]
+    elif action == "v_vfmt":
+        fmt = extra
         pm  = await q.message.reply_text(f"🎬 Converting to {fmt}...")
         src = await _download(context, file_id, uid, ".mp4")
         out = src + f".{fmt}"
@@ -458,7 +472,7 @@ async def media_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:  await q.message.reply_text("❌ Failed.")
         await pm.delete(); _cleanup([src, out])
 
-    # ── AUDIO actions ──────────────────────────────────────────────────
+    # ── AUDIO ──────────────────────────────────────────────────────────
 
     elif action == "a_slowreverb":
         pm  = await q.message.reply_text("🎵 Applying Slowed & Reverb...")
@@ -479,11 +493,10 @@ async def media_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await pm.delete(); _cleanup([src, out])
 
     elif action == "a_convert":
-        kb = _format_kb("a_conv_fmt|" + file_id, Config.AUDIO_FORMATS)
-        await q.edit_message_reply_markup(kb)
+        await q.edit_message_reply_markup(_format_kb(f"a_cfmt#{key}", Config.AUDIO_FORMATS))
 
-    elif action.startswith("a_conv_fmt"):
-        fmt = extra or parts[-1]
+    elif action == "a_cfmt":
+        fmt = extra
         pm  = await q.message.reply_text(f"🎵 Converting to {fmt}...")
         src = await _download(context, file_id, uid, ".mp3")
         out = src + f".{fmt}"
@@ -518,12 +531,12 @@ async def media_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == "a_speed":
         set_task(uid, {"file_id": file_id, "media_type": "audio"})
         context.user_data["waiting_for"] = "speed_val"
-        await q.message.reply_text("⚡ Send speed multiplier (50-200%):\nExample: <code>1.5</code> for 150%", parse_mode="HTML")
+        await q.message.reply_text("⚡ Send speed (e.g. <code>1.5</code> for 150%):", parse_mode="HTML")
 
     elif action == "a_vol":
         set_task(uid, {"file_id": file_id, "media_type": "audio"})
         context.user_data["waiting_for"] = "volume_val"
-        await q.message.reply_text("🔊 Send volume % (10-200):\nExample: <code>150</code>", parse_mode="HTML")
+        await q.message.reply_text("🔊 Send volume % (10-200), e.g. <code>150</code>:", parse_mode="HTML")
 
     elif action == "a_compress":
         pm  = await q.message.reply_text("📦 Compressing audio to 64k...")
@@ -544,7 +557,7 @@ async def media_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == "a_rename":
         set_task(uid, {"file_id": file_id, "media_type": "audio"})
         context.user_data["waiting_for"] = "new_filename"
-        await q.message.reply_text("✏️ Send the new filename (with extension, e.g. mysong.mp3):")
+        await q.message.reply_text("✏️ Send new filename (e.g. <code>mysong.mp3</code>):", parse_mode="HTML")
 
     elif action == "a_archive":
         pm  = await q.message.reply_text("📦 Creating zip archive...")
@@ -555,7 +568,7 @@ async def media_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:  await q.message.reply_text("❌ Failed.")
         await pm.delete(); _cleanup([src, out])
 
-    # ── DOCUMENT actions ───────────────────────────────────────────────
+    # ── DOCUMENT ───────────────────────────────────────────────────────
 
     elif action == "d_rename":
         set_task(uid, {"file_id": file_id, "media_type": "document"})
@@ -572,10 +585,10 @@ async def media_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await pm.delete(); _cleanup([src, out])
 
     elif action == "d_extract":
-        pm     = await q.message.reply_text("📂 Extracting archive...")
-        src    = await _download(context, file_id, uid)
+        pm      = await q.message.reply_text("📂 Extracting archive...")
+        src     = await _download(context, file_id, uid)
         out_dir = src + "_extracted"
-        ok     = ff.extract_archive(src, out_dir)
+        ok      = ff.extract_archive(src, out_dir)
         if ok:
             files = list(Path(out_dir).glob("*"))
             for f in files[:10]:
@@ -585,8 +598,8 @@ async def media_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await pm.delete(); _cleanup([src])
 
     elif action == "d_json":
-        pm   = await q.message.reply_text("📄 Formatting JSON...")
-        src  = await _download(context, file_id, uid, ".json")
+        pm  = await q.message.reply_text("📄 Formatting JSON...")
+        src = await _download(context, file_id, uid, ".json")
         try:
             import json
             with open(src) as f: data = json.load(f)
@@ -598,11 +611,11 @@ async def media_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await pm.delete(); _cleanup([src])
 
     elif action in ("v_caption", "a_caption", "d_caption"):
-        await q.message.reply_text("✏️ Caption editing: send your new caption text.")
         context.user_data["waiting_for"] = "caption_text"
+        await q.message.reply_text("✏️ Send your new caption text:")
 
     elif action == "d_fwd_remove":
-        await q.message.reply_text("✅ Forward tag removed. (Re-sent without forward tag.)")
+        await q.message.reply_text("✅ Forward tag removed.")
 
 
 def get_media_handlers():
